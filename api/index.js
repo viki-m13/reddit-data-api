@@ -5,7 +5,7 @@ const app = express();
 app.get('/', async (req, res) => {
   const subreddit = req.query.subreddit || 'python';
   const query = req.query.query || 'API';
-  const limit = parseInt(req.query.limit) || 5;  // Lower default for speed
+  const limit = parseInt(req.query.limit) || 5;
   try {
     const redditId = process.env.REDDIT_ID;
     const redditSecret = process.env.REDDIT_SECRET;
@@ -17,23 +17,42 @@ app.get('/', async (req, res) => {
     const headers = { Authorization: `bearer ${token}`, 'User-Agent': 'myRedditApp/0.1' };
     const redditUrl = `https://oauth.reddit.com/r/${subreddit}/search?q=${query}&limit=${limit}&restrict_sr=true`;
     const response = await axios.get(redditUrl, { headers });
-    let posts = response.data.data.children.map(p => ({ title: p.data.title, content: p.data.selftext }));
+    let posts = response.data.data.children.map(p => ({ 
+      title: p.data.title, 
+      content: p.data.selftext, 
+      source_url: `https://reddit.com${p.data.permalink}`  // Add link
+    }));
 
     const deepseekKey = process.env.DEEPSEEK_KEY;
-    // Parallel enrich: Promise.all for speed
     const enrichPromises = posts.map(post => {
-      const prompt = `Analyze this Reddit post and output ONLY valid JSON: { "summary": "Short summary (1-2 sentences)", "sentiment": "positive/negative/neutral", "sentiment_score": number from 1-10 (10 most positive), "key_insights": ["bullet1", "bullet2"] }. Post: ${post.title}. Content: ${post.content}.`;
+      const prompt = `Output ONLY pure valid JSON (no extra text, no markdown, no explanations): { "summary": "1-2 sentence summary (use title if no content)", "sentiment": "positive/negative/neutral", "sentiment_score": number from 1 to 10 (10 most positive, default 5 if neutral/empty)", "key_insights": array of 2-3 short bullet strings }. Analyze post: Title: ${post.title}. Content: ${post.content || 'No content available, base on title'}.`;
       return axios.post('https://api.deepseek.com/v1/chat/completions', {
         model: 'deepseek-chat',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 300
       }, { headers: { Authorization: `Bearer ${deepseekKey}` } })
         .then(deepResp => {
+          let content = deepResp.data.choices[0].message.content.trim();  // Trim extras
           try {
-            post.enriched = JSON.parse(deepResp.data.choices[0].message.content);  // Parse structured JSON
-          } catch {
-            post.enriched = { error: 'Failed to parse AI response' };
+            // Safe parse: Fix common issues like trailing commas
+            content = content.replace(/,\s*([}\]])/g, '$1');  // Remove trailing commas
+            post.enriched = JSON.parse(content);
+          } catch (e) {
+            post.enriched = { 
+              summary: 'Error parsing AI response', 
+              sentiment: 'neutral', 
+              sentiment_score: 5, 
+              key_insights: ['Fallback: Check original post'] 
+            };
           }
+          return post;
+        }).catch(() => {
+          post.enriched = { 
+            summary: 'AI enrichment failed', 
+            sentiment: 'neutral', 
+            sentiment_score: 5, 
+            key_insights: [] 
+          };
           return post;
         });
     });
