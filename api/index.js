@@ -20,35 +20,35 @@ app.get('/', async (req, res) => {
     let posts = response.data.data.children.map(p => ({ 
       title: p.data.title, 
       content: p.data.selftext, 
-      source_url: `https://reddit.com${p.data.permalink}`  // Add link
+      source_url: `https://reddit.com${p.data.permalink}`
     }));
 
     const deepseekKey = process.env.DEEPSEEK_KEY;
     const enrichPromises = posts.map(post => {
-      const prompt = `Output ONLY pure valid JSON (no extra text, no markdown, no explanations): { "summary": "1-2 sentence summary (use title if no content)", "sentiment": "positive/negative/neutral", "sentiment_score": number from 1 to 10 (10 most positive, default 5 if neutral/empty)", "key_insights": array of 2-3 short bullet strings }. Analyze post: Title: ${post.title}. Content: ${post.content || 'No content available, base on title'}.`;
+      const prompt = `Output ONLY pure valid JSON (no extra text, no markdown). Example output: { "summary": "Example summary", "sentiment": "neutral", "sentiment_score": 5, "key_insights": ["Point 1", "Point 2"] }. Analyze post (use title if no content): Title: ${post.title}. Content: ${post.content || 'No content - base on title'}.`;
       return axios.post('https://api.deepseek.com/v1/chat/completions', {
         model: 'deepseek-chat',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 300
+        max_tokens: 300,
+        response_format: { type: 'json_object' }  // Enable strict JSON mode
       }, { headers: { Authorization: `Bearer ${deepseekKey}` } })
         .then(deepResp => {
-          let content = deepResp.data.choices[0].message.content.trim();  // Trim extras
+          let content = deepResp.data.choices[0].message.content.trim();
           try {
-            // Safe parse: Fix common issues like trailing commas
-            content = content.replace(/,\s*([}\]])/g, '$1');  // Remove trailing commas
+            content = content.replace(/,\s*([}\]])/g, '$1');  // Fix trailing commas
             post.enriched = JSON.parse(content);
           } catch (e) {
             post.enriched = { 
-              summary: 'Error parsing AI response', 
+              summary: 'Fallback summary based on title: ' + post.title.substring(0, 100),
               sentiment: 'neutral', 
               sentiment_score: 5, 
-              key_insights: ['Fallback: Check original post'] 
+              key_insights: ['Check source for details'] 
             };
           }
           return post;
         }).catch(() => {
           post.enriched = { 
-            summary: 'AI enrichment failed', 
+            summary: 'AI failed - using title', 
             sentiment: 'neutral', 
             sentiment_score: 5, 
             key_insights: [] 
