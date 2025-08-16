@@ -6,6 +6,7 @@ app.get('/', async (req, res) => {
   const subreddit = req.query.subreddit || 'python';
   const query = req.query.query || 'API';
   const limit = parseInt(req.query.limit) || 5;
+  const enrich = req.query.enrich !== 'false';  // Default true, ?enrich=false to skip for speed
   try {
     const redditId = process.env.REDDIT_ID;
     const redditSecret = process.env.REDDIT_SECRET;
@@ -23,42 +24,50 @@ app.get('/', async (req, res) => {
       source_url: `https://reddit.com${p.data.permalink}`
     }));
 
-    const deepseekKey = process.env.DEEPSEEK_KEY;
-    const enrichPromises = posts.map(post => {
-      const prompt = `Output ONLY pure valid JSON (no extra text, no markdown). Example output: { "summary": "Example summary", "sentiment": "neutral", "sentiment_score": 5, "key_insights": ["Point 1", "Point 2"] }. Analyze post (use title if no content): Title: ${post.title}. Content: ${post.content || 'No content - base on title'}.`;
-      return axios.post('https://api.deepseek.com/v1/chat/completions', {
-        model: 'deepseek-chat',
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 300,
-        response_format: { type: 'json_object' }  // Enable strict JSON mode
-      }, { headers: { Authorization: `Bearer ${deepseekKey}` } })
-        .then(deepResp => {
-          let content = deepResp.data.choices[0].message.content.trim();
-          try {
-            content = content.replace(/,\s*([}\]])/g, '$1');  // Fix trailing commas
-            post.enriched = JSON.parse(content);
-          } catch (e) {
+    if (enrich) {
+      const deepseekKey = process.env.DEEPSEEK_KEY;
+      const enrichPromises = posts.map(post => {
+        const prompt = `Respond with ONLY a valid JSON object, no other text, no markdown, no explanations, nothing else. Use this exact structure: { "summary": "1-2 sentence summary (use title if no content)", "sentiment": "positive/negative/neutral", "sentiment_score": 1 to 10 number (10 most positive, 5 if neutral or empty)", "key_insights": ["short bullet 1", "short bullet 2", "short bullet 3"] }. Analyze: Title: ${post.title}. Content: ${post.content || 'No content - use title for neutral analysis'}.`;
+        return axios.post('https://api.deepseek.com/v1/chat/completions', {
+          model: 'deepseek-chat',
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 150,  // Lower for speed
+          response_format: { type: 'json_object' }
+        }, { headers: { Authorization: `Bearer ${deepseekKey}` } })
+          .then(deepResp => {
+            let content = deepResp.data.choices[0].message.content.trim();
+            // Extract JSON if wrapped/extra text
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            if (jsonMatch) content = jsonMatch[0];
+            try {
+              content = content.replace(/,\s*([}\]])/g, '$1');  // Fix commas
+              post.enriched = JSON.parse(content);
+            } catch (e) {
+              post.enriched = { 
+                summary: 'Fallback: ' + post.title.substring(0, 100),
+                sentiment: 'neutral', 
+                sentiment_score: 5, 
+                key_insights: ['Based on title only - check source'] 
+              };
+            }
+            return post;
+          }).catch(() => {
             post.enriched = { 
-              summary: 'Fallback summary based on title: ' + post.title.substring(0, 100),
+              summary: 'AI failed', 
               sentiment: 'neutral', 
               sentiment_score: 5, 
-              key_insights: ['Check source for details'] 
+              key_insights: [] 
             };
-          }
-          return post;
-        }).catch(() => {
-          post.enriched = { 
-            summary: 'AI failed - using title', 
-            sentiment: 'neutral', 
-            sentiment_score: 5, 
-            key_insights: [] 
-          };
-          return post;
-        });
-    });
-    const enriched = await Promise.all(enrichPromises);
+            return post;
+          });
+      });
+      posts = await Promise.all(enrichPromises);
+    } else {
+      // No enrich - faster
+      posts.forEach(post => post.enriched = null);
+    }
 
-    res.json({ posts: enriched });
+    res.json({ posts });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
