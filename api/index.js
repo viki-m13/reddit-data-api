@@ -7,8 +7,8 @@ app.get('/', async (req, res) => {
   const query = req.query.query || 'API';
   const limit = parseInt(req.query.limit) || 10;
   try {
-    const redditId = 'G6FSxnM-Vi_8ro2GmgSeow';  // Replace
-    const redditSecret = 'jSkhzR_7_OHn5LUR_ltCts275tStHA';  // Replace
+    const redditId = process.env.REDDIT_ID;
+    const redditSecret = process.env.REDDIT_SECRET;
     const auth = { username: redditId, password: redditSecret };
     const tokenData = { grant_type: 'client_credentials', user_agent: 'myRedditApp/0.1' };
     const tokenResp = await axios.post('https://www.reddit.com/api/v1/access_token', new URLSearchParams(tokenData), { auth });
@@ -19,7 +19,7 @@ app.get('/', async (req, res) => {
     const response = await axios.get(redditUrl, { headers });
     let posts = response.data.data.children.map(p => ({ title: p.data.title, content: p.data.selftext }));
 
-    const deepseekKey = 'sk-457f3a9291c74e9589c87eb822c98ae6';  // Replace
+    const deepseekKey = process.env.DEEPSEEK_KEY;
     const enriched = [];
     for (let post of posts) {
       const prompt = `Summarize this Reddit post: ${post.title}. Content: ${post.content}. Provide sentiment and insights.`;
